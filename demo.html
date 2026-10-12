@@ -1,0 +1,63 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>CSV Format Check — private synthetic demo</title><style>body{font:16px system-ui;max-width:1000px;margin:2rem auto;padding:1rem;color:#173047}textarea{width:100%;height:210px}label{display:inline-block;margin:8px}input{width:120px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#eef3f6;padding:12px}.issue{border-left:4px solid #a43c26;padding:12px;margin:12px 0}button{padding:10px}h1{font-size:26px}</style>
+<h1>CSV Format Check</h1><p>Private offline demo for solo bookkeepers. Use synthetic data only. Locate formatting problems before manual import; this does not verify balances, duplicates, intended meaning or import success.</p><button id="sample">Load synthetic sample</button><label>Local fixture file <input type="file" id="file" accept=".csv,text/csv"></label><p>A file is read only in this browser, never sent anywhere. UTF-8 only. Maximum 100 KB and 1,000 logical records including header. Pasted browser text may normalize line endings; file loading preserves decoded CRLF.</p><textarea id="source" aria-label="Synthetic CSV source"></textarea><br>
+<label>Delimiter <select id="delimiter"><option value="">Declare</option><option value=",">Comma</option></select></label><label><input type="checkbox" id="header">Header present (required)</label><label>Date column <input id="dateColumn" placeholder="Date"></label><label>Amount column <input id="amountColumn" placeholder="Amount"></label><label>Date format <select id="dateFormat"><option value="">Declare</option><option>DD/MM/YYYY</option><option>MM/DD/YYYY</option><option>YYYY-MM-DD</option></select></label><label><input type="checkbox" id="amountDeclared">Declare dot decimal, no grouping, optional leading minus, 1–2 fractional digits</label><button id="analyze">Analyze</button><p>Date and amount declarations must match your source. Valid syntax cannot prove your intended date convention or monetary meaning.</p><h2>Exact original input snapshot</h2><p id="preservation"></p><pre id="original"></pre><h2>Diagnostics</h2><div id="results" aria-live="polite"></div>
+<script id="validator">
+'use strict';
+const SAMPLE='Date,Description,Amount\n13/10/2026,"Client, A",-12.50\n31/02/2026,Bad calendar,10.00\n14/10/2026,Grouped amount,"1,234.56"\n15/10/2026,Extra,7.00,unexpected\n03/04/2026,Declared convention,0.00';
+function parseCSV(source){
+ const records=[];let fields=[],value='',raw='',state='start',line=1,startLine=1;
+ const field=()=>{fields.push({value,raw});value='';raw='';state='start';};
+ const record=()=>{field();records.push({fields,line:startLine});fields=[];startLine=line;};
+ for(let i=0;i<source.length;i++){const c=source[i];
+  if(state==='quoted'){raw+=c;if(c==='"'){if(source[i+1]==='"'){raw+='"';value+='"';i++;}else state='closed';}else{value+=c;if(c==='\n')line++;else if(c==='\r'&&source[i+1]!=='\n')line++;}continue;}
+  if(c===',' ){field();continue;}
+  if(c==='\n'||c==='\r'){record();if(c==='\r'&&source[i+1]==='\n')i++;line++;startLine=line;continue;}
+  if(state==='closed')return {records,error:{record:records.length+1,line,raw:raw+c,message:'Unexpected text after closing quote; cell positions are unreliable.'}};
+  if(c==='"'){if(state!=='start')return {records,error:{record:records.length+1,line,raw:raw+c,message:'Quote inside unquoted field; cell positions are unreliable.'}};state='quoted';raw+=c;continue;}
+  state='unquoted';raw+=c;value+=c;
+ }
+ if(state==='quoted')return {records,error:{record:records.length+1,line,raw,message:'Unterminated quoted field; cell positions are unreliable.'}};
+ if(raw!==''||fields.length||state!=='start')record();return {records};
+}
+function validDate(value,format){let m,d,y,match;if(format==='YYYY-MM-DD'){match=/^(\d{4})-(\d{2})-(\d{2})$/.exec(value);if(!match)return false;[,y,m,d]=match;}else{match=/^(\d{2})\/(\d{2})\/(\d{4})$/.exec(value);if(!match)return false;if(format==='DD/MM/YYYY')[,d,m,y]=match;else if(format==='MM/DD/YYYY')[,m,d,y]=match;else return false;}y=Number(y);m=Number(m);d=Number(d);const leap=y%4===0&&(y%100!==0||y%400===0);return y>=1&&m>=1&&m<=12&&d>=1&&d<=[31,leap?29:28,31,30,31,30,31,31,30,31,30,31][m-1];}
+function validate(source,decl){
+ const result={blocked:false,issues:[],records:0,original:source};
+ const issue=(record,column,raw,value,expectation,message)=>result.issues.push({record,column,raw,value,expectation,message,action:'Inspect the original source record and your declarations; edit a separate source copy manually if appropriate.'});
+ const block=message=>{result.blocked=true;issue(null,'Declaration/input','','','Explicit supported declarations',message);return result;};
+ if(new TextEncoder().encode(source).length>100*1024)return block('Input exceeds 100 KB (102,400 bytes).');
+ const parsed=parseCSV(source);result.records=parsed.records.length;
+ if(parsed.error){result.blocked=true;issue(parsed.error.record,'CSV syntax',parsed.error.raw,parsed.error.raw,'Well-formed comma CSV',parsed.error.message+' Physical line '+parsed.error.line+'. No cell validation performed.');return result;}
+ if(result.records>1000)return block('Input exceeds 1,000 logical records including header.');
+ if(decl.delimiter!==','||decl.header!==true||decl.amountDeclared!==true)return block('Declare comma delimiter, header present and strict amount grammar before analysis.');
+ if(!parsed.records.length)return block('Input is empty; a header and data are required.');
+ const names=parsed.records[0].fields.map(f=>f.value);
+ if(names.some(n=>n==='')||new Set(names).size!==names.length)return block('Header names must be nonempty and unique; duplicate mapping is unsafe.');
+ const di=names.indexOf(decl.dateColumn),ai=names.indexOf(decl.amountColumn);
+ if(di<0||ai<0||di===ai)return block('Date and Amount must map to two existing unique columns.');
+ if(!['DD/MM/YYYY','MM/DD/YYYY','YYYY-MM-DD'].includes(decl.dateFormat)){
+  block('Declare a supported date convention; no format is inferred.');
+  parsed.records.slice(1).forEach((r,index)=>{if(r.fields.length===names.length){const f=r.fields[di];if(/^\d{2}\/\d{2}\/\d{4}$/.test(f.value)&&validDate(f.value,'DD/MM/YYYY')&&validDate(f.value,'MM/DD/YYYY'))issue(index+2,names[di],f.raw,f.value,'Explicit date convention','Ambiguous without a declaration: both DD/MM/YYYY and MM/DD/YYYY are calendar-valid.');}});return result;
+ }
+ parsed.records.slice(1).forEach((r,index)=>{const rn=index+2;if(r.fields.length!==names.length){issue(rn,'Record width',r.fields.map(f=>f.raw).join(','),r.fields.map(f=>f.value).join(' | '),names.length+' fields','Found '+r.fields.length+' fields. Cell validation skipped for this record.');return;}
+ const date=r.fields[di],amount=r.fields[ai];if(!validDate(date.value,decl.dateFormat))issue(rn,names[di],date.raw,date.value,decl.dateFormat+' with a valid calendar date','Date-format or calendar mismatch.');
+ if(!/^-?\d+(?:\.\d{1,2})?$/.test(amount.value))issue(rn,names[ai],amount.raw,amount.value,'Dot decimal; no grouping; optional minus; 1–2 fractional digits','Amount grammar mismatch. Monetary values remain strings.');
+ });return result;
+}
+</script><script id="ui">
+const $=id=>document.getElementById(id);let originalInput='',sourceName='',rejectedFile=null,selection=0,pendingFile=null;
+const provenance=document.createElement('p');provenance.id='provenance';$('source').before(provenance);
+function showState(){
+ provenance.textContent='Displayed snapshot source: '+sourceName+'.'+(rejectedFile?' Previous accepted input retained; rejected file was not loaded or analyzed.':pendingFile?' Reading '+pendingFile+'; analysis blocked until acceptance.':'');
+ if(rejectedFile){$('results').textContent='Rejected file '+rejectedFile.name+': '+rejectedFile.reason+' Analyze blocked. Displayed snapshot belongs to '+sourceName+'.';$('preservation').textContent='Previous accepted snapshot retained; rejected file was not analyzed.';}
+}
+function setSource(text,name){originalInput=text;sourceName=name;rejectedFile=null;pendingFile=null;$('source').value=text;$('original').textContent=text;$('results').replaceChildren();$('preservation').textContent='Exact decoded original retained in memory; no persistence.';showState();}
+$('source').addEventListener('input',()=>{selection++;setSource($('source').value,'explicit editor input');});
+$('sample').onclick=()=>{selection++;setSource(SAMPLE,'synthetic sample button');};
+$('file').onchange=async()=>{const f=$('file').files[0];if(!f)return;const token=++selection;pendingFile=f.name;$('results').replaceChildren();showState();
+ const reject=reason=>{if(token!==selection)return;pendingFile=null;rejectedFile={name:f.name,reason};showState();};
+ if(f.size>102400){reject('file exceeds 100 KB (102,400 bytes)');return;}
+ try{const text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(await f.arrayBuffer());if(token!==selection)return;setSource(text,'file '+f.name);}catch(e){reject('file is not valid UTF-8');}
+};
+$('analyze').onclick=()=>{if(rejectedFile){showState();return;}if(pendingFile){$('results').textContent='Analysis blocked while reading '+pendingFile+'.';showState();return;}const before=originalInput,textareaBefore=$('source').value;const r=validate(originalInput,{delimiter:$('delimiter').value,header:$('header').checked,dateColumn:$('dateColumn').value,amountColumn:$('amountColumn').value,dateFormat:$('dateFormat').value,amountDeclared:$('amountDeclared').checked});$('results').replaceChildren();const status=document.createElement('p');status.textContent=r.blocked?'Analysis blocked.':r.issues.length?r.issues.length+' formatting diagnostics across '+new Set(r.issues.map(i=>i.record)).size+' records.':'No formatting problems found under your declarations.';$('results').append(status);r.issues.forEach(i=>{const node=document.createElement('pre');node.className='issue';node.textContent='Logical record: '+(i.record??'—')+' (header is record 1)\nColumn/location: '+i.column+'\nRaw field/source: '+i.raw+'\nDecoded display: '+i.value+'\nDeclared expectation: '+i.expectation+'\n'+i.message+'\n'+i.action;$('results').append(node);});$('preservation').textContent=(before===originalInput&&textareaBefore===$('source').value)?'Preservation check passed: original string and editor unchanged.':'Preservation check FAILED.';};
+setSource(SAMPLE,'initial synthetic sample');
+</script></html>
